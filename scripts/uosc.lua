@@ -1,6 +1,6 @@
 --[[
 
-uosc 2.10.2 - 2020-Jun-20 | https://github.com/darsain/uosc
+uosc 2.11.0 - 2020-Nov-07 | https://github.com/darsain/uosc
 
 Minimalist cursor proximity based UI for MPV player.
 
@@ -30,8 +30,7 @@ timeline_size_max_fullscreen=60
 timeline_start_hidden=no
 # timeline opacity
 timeline_opacity=0.8
-# top (and bottom in no-border mode) border of background color to help visually
-# separate elapsed bar from a video of similar color or desktop background
+# top border of background color to help visually separate timeline from video
 timeline_border=1
 # when scrolling above timeline, wheel will seek by this amount of seconds
 timeline_step=5
@@ -76,6 +75,10 @@ top_bar_size_fullscreen=46
 top_bar_controls=yes
 top_bar_title=yes
 
+# window border drawn in no-border mode
+window_border_size=1
+window_border_opacity=0.8
+
 # pause video on clicks shorter than this number of milliseconds, 0 to disable
 pause_on_click_shorter_than=0
 # flash duration in milliseconds used by `flash-{element}` commands
@@ -96,6 +99,8 @@ total_time=no
 autohide=no
 # can be: none, flash, static
 pause_indicator=flash
+# sizes to list in stream quality menu
+stream_quality_options=4320,2160,1440,1080,720,480,360,240,144
 # load first file when calling next on a last file in a directory and vice versa
 directory_navigation_loops=no
 # file types to look for when navigating media files
@@ -165,6 +170,7 @@ Key  script-binding uosc/audio
 Key  script-binding uosc/video
 Key  script-binding uosc/playlist
 Key  script-binding uosc/chapters
+Key  script-binding uosc/stream-quality
 Key  script-binding uosc/open-file
 Key  script-binding uosc/next
 Key  script-binding uosc/prev
@@ -236,6 +242,8 @@ local options = {
 	top_bar_controls = true,
 	top_bar_title = true,
 
+	window_border_size = 1,
+	window_border_opacity = 0.8,
 	pause_on_click_shorter_than = 0,
 	flash_duration = 1000,
 	proximity_in = 40,
@@ -248,6 +256,7 @@ local options = {
 	font_bold = false,
 	autohide = false,
 	pause_indicator = 'flash',
+	stream_quality_options = '4320,2160,1440,1080,720,480,360,240,144',
 	directory_navigation_loops = false,
 	media_types = '3gp,asf,avi,bmp,flac,flv,gif,h264,h265,jpeg,jpg,m4a,m4v,mid,midi,mkv,mov,mp3,mp4,mp4a,mp4v,mpeg,mpg,oga,ogg,ogm,ogv,opus,png,rmvb,svg,tif,tiff,wav,weba,webm,webp,wma,wmv',
 	subtitle_types = 'aqt,gsub,jss,sub,ttxt,pjs,psb,rt,smi,slt,ssf,srt,ssa,ass,usf,idx,vt',
@@ -286,8 +295,10 @@ local state = {
 	pause = false,
 	chapters = nil,
 	chapter_ranges = nil,
+	border = mp.get_property_native('border'),
 	fullscreen = mp.get_property_native('fullscreen'),
 	maximized = mp.get_property_native('window-maximized'),
+	fullormaxed = mp.get_property_native('fullscreen') or mp.get_property_native('window-maximized'),
 	render_timer = nil,
 	render_last_time = 0,
 	volume = nil,
@@ -714,6 +725,7 @@ function Element:trigger(name, ...)
 	self:maybe('on_'..name, ...)
 	if self._eventListeners[name] == nil then return end
 	for _, handler in ipairs(self._eventListeners[name]) do handler(...) end
+	request_render()
 end
 
 -- Briefly flashes the element for `options.flash_duration` milliseconds.
@@ -837,7 +849,10 @@ function Menu:open(items, open_item, opts)
 
 			-- Apply options
 			for key, value in pairs(opts) do this[key] = value end
-			this.selected_item = this.active_item
+
+			if not this.selected_item then
+				this.selected_item = this.active_item
+			end
 
 			-- Set initial dimensions
 			this:on_display_change()
@@ -862,7 +877,7 @@ function Menu:open(items, open_item, opts)
 			request_render()
 		end,
 		on_display_change = function(this)
-			this.item_height = (state.fullscreen or state.maximized) and options.menu_item_height_fullscreen or options.menu_item_height
+			this.item_height = state.fullormaxed and options.menu_item_height_fullscreen or options.menu_item_height
 			this.font_size = round(this.item_height * 0.48 * options.menu_font_scale)
 			this.item_content_spacing = round((this.item_height - this.font_size) * 0.6)
 			this.scroll_step = this.item_height + this.item_spacing
@@ -1397,16 +1412,16 @@ function render_timeline(this)
 	local progress = state.position / state.duration
 
 	-- Background bar coordinates
-	local bax = 0
-	local bay = display.height - size - this.bottom_border - this.top_border
-	local bbx = display.width
-	local bby = display.height
+	local bax = this.ax
+	local bay = this.by - size
+	local bbx = this.bx
+	local bby = this.by
 
 	-- Foreground bar coordinates
 	local fax = bax
 	local fay = bay + this.top_border
-	local fbx = bbx * progress
-	local fby = bby - this.bottom_border
+	local fbx = fax + this.width * progress
+	local fby = bby
 	local foreground_size = bby - bay
 	local foreground_coordinates = fax..','..fay..','..fbx..','..fby -- for clipping
 
@@ -1441,8 +1456,8 @@ function render_timeline(this)
 			local range_start = math.max(type(range['start']) == 'number' and range['start'] or 0.000001, 0.000001)
 			local range_end = math.min(type(range['end']) and range['end'] or state.duration, state.duration)
 			ass:rect_cw(
-				bbx * (range_start / state.duration), range_ay,
-				bbx * (range_end / state.duration), range_ay + range_height
+				bax + this.width * (range_start / state.duration), range_ay,
+				bax + this.width * (range_end / state.duration), range_ay + range_height
 			)
 			ass:draw_stop()
 		end
@@ -1452,8 +1467,8 @@ function render_timeline(this)
 	if state.chapter_ranges ~= nil then
 		for i, chapter_range in ipairs(state.chapter_ranges) do
 			for i, range in ipairs(chapter_range.ranges) do
-				local rax = display.width * (range['start'].time / state.duration)
-				local rbx = display.width * (range['end'].time / state.duration)
+				local rax = bax + this.width * (range['start'].time / state.duration)
+				local rbx = bax + this.width * (range['end'].time / state.duration)
 				ass:new_event()
 				ass:append('{\\blur0\\bord0\\1c&H'..chapter_range.color..'}')
 				ass:append(ass_opacity(chapter_range.opacity))
@@ -1502,7 +1517,7 @@ function render_timeline(this)
 			chapter_size = size <= 1 and foreground_size or chapter_size
 			local chapter_half_size = chapter_size / 2
 			local draw_chapter = function (time)
-				local chapter_x = display.width * (time / state.duration)
+				local chapter_x = bax + this.width * (time / state.duration)
 				local color = chapter_x > fbx and options.color_foreground or options.color_background
 
 				ass:new_event()
@@ -1548,16 +1563,18 @@ function render_timeline(this)
 	if text_opacity > 0 then
 		-- Elapsed time
 		if state.elapsed_seconds then
+			local elapsed_x = bax + spacing
+			local elapsed_y = fay + (size / 2)
 			ass:new_event()
 			ass:append('{\\blur0\\bord0\\shad0\\1c&H'..options.color_foreground_text..'\\fn'..config.font..'\\fs'..this.font_size..bold_tag..'\\clip('..foreground_coordinates..')')
 			ass:append(ass_opacity(math.min(options.timeline_opacity + 0.1, 1), text_opacity))
-			ass:pos(spacing, fay + (size / 2))
+			ass:pos(elapsed_x, elapsed_y)
 			ass:an(4)
 			ass:append(state.elapsed_time)
 			ass:new_event()
 			ass:append('{\\blur0\\bord0\\shad1\\1c&H'..options.color_background_text..'\\4c&H'..options.color_background..'\\fn'..config.font..'\\fs'..this.font_size..bold_tag..'\\iclip('..foreground_coordinates..')')
 			ass:append(ass_opacity(math.min(options.timeline_opacity + 0.1, 1), text_opacity))
-			ass:pos(spacing, fay + (size / 2))
+			ass:pos(elapsed_x, elapsed_y)
 			ass:an(4)
 			ass:append(state.elapsed_time)
 		end
@@ -1565,21 +1582,23 @@ function render_timeline(this)
 		-- End time
 		local end_time
 		if options.total_time then
-			end_time = state.total_time
+			end_time = this.total_time
 		else
 			end_time = state.remaining_time and '-'..state.remaining_time
 		end
 		if end_time then
+			local end_x = bbx - spacing
+			local end_y = fay + (size / 2)
 			ass:new_event()
 			ass:append('{\\blur0\\bord0\\shad0\\1c&H'..options.color_foreground_text..'\\fn'..config.font..'\\fs'..this.font_size..bold_tag..'\\clip('..foreground_coordinates..')')
 			ass:append(ass_opacity(math.min(options.timeline_opacity + 0.1, 1), text_opacity))
-			ass:pos(display.width - spacing, fay + (size / 2))
+			ass:pos(end_x, end_y)
 			ass:an(6)
 			ass:append(end_time)
 			ass:new_event()
 			ass:append('{\\blur0\\bord0\\shad1\\1c&H'..options.color_background_text..'\\4c&H'..options.color_background..'\\fn'..config.font..'\\fs'..this.font_size..bold_tag..'\\iclip('..foreground_coordinates..')')
 			ass:append(ass_opacity(math.min(options.timeline_opacity + 0.1, 1), text_opacity))
-			ass:pos(display.width - spacing, fay + (size / 2))
+			ass:pos(end_x, end_y)
 			ass:an(6)
 			ass:append(end_time)
 		end
@@ -1632,7 +1651,7 @@ function render_top_bar(this)
 		ass:new_event()
 		ass:append('{\\blur0\\bord1\\shad1\\3c&HFFFFFF\\4c&H000000}')
 		ass:append(ass_opacity(this.button_opacity, opacity))
-		ass:pos(close.ax + (this.button_width / 2), (this.size / 2))
+		ass:pos(close.ax + (this.button_width / 2), close.ay + (this.size / 2))
 		ass:draw_start()
 		ass:move_to(-this.icon_size, this.icon_size)
 		ass:line_to(this.icon_size, -this.icon_size)
@@ -1655,14 +1674,14 @@ function render_top_bar(this)
 		ass:new_event()
 		ass:append('{\\blur0\\bord2\\shad0\\1c\\3c&H000000}')
 		ass:append(ass_opacity({[3] = this.button_opacity}, opacity))
-		ass:pos(maximize.ax + (this.button_width / 2), (this.size / 2))
+		ass:pos(maximize.ax + (this.button_width / 2), maximize.ay + (this.size / 2))
 		ass:draw_start()
 		ass:rect_cw(-this.icon_size + 1, -this.icon_size + 1, this.icon_size + 1, this.icon_size + 1)
 		ass:draw_stop()
 		ass:new_event()
 		ass:append('{\\blur0\\bord2\\shad0\\1c\\3c&HFFFFFF}')
 		ass:append(ass_opacity({[3] = this.button_opacity}, opacity))
-		ass:pos(maximize.ax + (this.button_width / 2), (this.size / 2))
+		ass:pos(maximize.ax + (this.button_width / 2), maximize.ay + (this.size / 2))
 		ass:draw_start()
 		ass:rect_cw(-this.icon_size, -this.icon_size, this.icon_size, this.icon_size)
 		ass:draw_stop()
@@ -1683,7 +1702,7 @@ function render_top_bar(this)
 		ass:append('{\\blur0\\bord1\\shad1\\3c&HFFFFFF\\4c&H000000}')
 		ass:append(ass_opacity(this.button_opacity, opacity))
 		ass:append('{\\1a&HFF&}')
-		ass:pos(minimize.ax + (this.button_width / 2), (this.size / 2))
+		ass:pos(minimize.ax + (this.button_width / 2), minimize.ay + (this.size / 2))
 		ass:draw_start()
 		ass:move_to(-this.icon_size, 0)
 		ass:line_to(this.icon_size, 0)
@@ -1692,12 +1711,12 @@ function render_top_bar(this)
 
 	-- Window title
 	if options.top_bar_title and state.media_title then
-		local clip_coordinates = '0,0,'..(this.title_bx - this.spacing)..','..this.size
+		local clip_coordinates = this.ax..','..this.ay..','..(this.title_bx - this.spacing)..','..this.by
 
 		ass:new_event()
 		ass:append('{\\q2\\blur0\\bord1\\shad0\\1c&HFFFFFF\\3c&H000000\\fn'..config.font..'\\fs'..this.font_size..bold_tag..'\\clip('..clip_coordinates..')')
 		ass:append(ass_opacity(1, opacity))
-		ass:pos(0 + this.spacing, this.size / 2)
+		ass:pos(this.ax + this.spacing, this.ay + (this.size / 2))
 		ass:an(4)
 		ass:append(state.media_title)
 	end
@@ -1843,7 +1862,8 @@ function render_speed(this)
 
 	-- Coordinates
 	local ax = this.ax
-	local ay = this.ay + timeline.size_max - timeline:get_effective_size() - timeline.top_border - timeline.bottom_border
+	-- local ay = this.ay + timeline.size_max - timeline:get_effective_size()
+	local ay = this.ay
 	local bx = this.bx
 	local by = ay + this.height
 	local half_width = (this.width / 2)
@@ -2101,6 +2121,31 @@ end
 
 -- STATIC ELEMENTS
 
+elements:add('window_border', Element.new({
+	size = nil, -- set in init
+	init = function(this)
+		this:update_size();
+	end,
+	update_size = function(this)
+		this.size = options.window_border_size > 0 and not state.fullormaxed and not state.border and options.window_border_size or 0
+	end,
+	on_prop_border = function(this) this:update_size() end,
+	on_prop_fullormaxed = function(this) this:update_size() end,
+	render = function(this)
+		if this.size > 0 then
+			local ass = assdraw.ass_new()
+			local clip_coordinates = this.size..','..this.size..','..(display.width - this.size)..','..(display.height - this.size)
+			ass:new_event()
+			ass:append('{\\blur0\\bord0\\1c&H'..options.color_background..'\\iclip('..clip_coordinates..')}')
+			ass:append(ass_opacity(options.window_border_opacity))
+			ass:pos(0, 0)
+			ass:draw_start()
+			ass:rect_cw(0, 0, display.width, display.height)
+			ass:draw_stop()
+			return ass
+		end
+	end
+}))
 if itable_find({'flash', 'static'}, options.pause_indicator) then
 	elements:add('pause_indicator', Element.new({
 		base_icon_opacity = options.pause_indicator == 'flash' and 1 or 0.8,
@@ -2182,18 +2227,11 @@ if itable_find({'flash', 'static'}, options.pause_indicator) then
 end
 elements:add('timeline', Element.new({
 	pressed = false,
-	size_max = 0, size_min = 0, -- set in `on_display_change` handler based on `state.fullscreen`
+	size_max = 0, size_min = 0, -- set in `on_display_change` handler based on `state.fullormaxed`
 	size_min_override = options.timeline_start_hidden and 0 or nil, -- used for toggle-progress command
 	font_size = 0, -- calculated in on_display_change
+	total_time = nil, -- set in op_prop_duration listener
 	top_border = options.timeline_border,
-	bottom_border = 0, -- set dynamically in `border` property observer
-	init = function(this)
-		-- Toggle 1px bottom border for timeline in no-border mode
-		mp.observe_property('border', 'bool', function(_, border)
-			this.bottom_border = not border and options.timeline_border or 0
-			request_render()
-		end)
-	end,
 	get_effective_proximity = function(this)
 		if (elements.volume_slider and elements.volume_slider.pressed) then return 0 end
 		if this.pressed then return 1 end
@@ -2207,8 +2245,8 @@ elements:add('timeline', Element.new({
 		local size_min = this:get_effective_size_min()
 		return size_min + math.ceil((this.size_max - size_min) * this:get_effective_proximity())
 	end,
-	on_display_change = function(this)
-		if state.fullscreen or state.maximized then
+	update_dimensions = function(this)
+		if state.fullormaxed then
 			this.size_min = options.timeline_size_min_fullscreen
 			this.size_max = options.timeline_size_max_fullscreen
 		else
@@ -2216,13 +2254,20 @@ elements:add('timeline', Element.new({
 			this.size_max = options.timeline_size_max
 		end
 		this.font_size = math.floor(math.min((this.size_max + 60) * 0.2, this.size_max * 0.96) * options.timeline_font_scale)
-		this.ax = 0
-		this.ay = display.height - this.size_max - this.top_border - this.bottom_border
-		this.bx = display.width
-		this.by = display.height
+		this.ax = elements.window_border.size
+		this.ay = display.height - elements.window_border.size - this.size_max - this.top_border
+		this.bx = display.width - elements.window_border.size
+		this.by = display.height - elements.window_border.size
+		this.width = this.bx - this.ax
+	end,
+	on_prop_border = function(this) this:update_dimensions() end,
+	on_prop_fullormaxed = function(this) this:update_dimensions() end,
+	on_display_change = function(this) this:update_dimensions() end,
+	on_prop_duration = function(this, value)
+		this.total_time = value and mp.format_time(value) or nil
 	end,
 	set_from_cursor = function(this)
-		mp.commandv('seek', ((cursor.x / display.width) * 100), 'absolute-percent+exact')
+		mp.commandv('seek', (((cursor.x - this.ax) / this.width) * 100), 'absolute-percent+exact')
 	end,
 	on_mbtn_left_down = function(this)
 		this.pressed = true
@@ -2241,86 +2286,92 @@ elements:add('timeline', Element.new({
 	end,
 	render = render_timeline,
 }))
-if options.top_bar_controls or options.top_bar_title then
-	elements:add('top_bar', Element.new({
-		button_opacity = 0.8,
-		enabled = false,
-		init = function(this)
-			mp.observe_property('border', 'bool', function(_, border)
-				this.enabled = not border
-			end)
-		end,
-		get_effective_proximity = function(this)
-			if (elements.volume_slider and elements.volume_slider.pressed) or elements.curtain.opacity > 0 then return 0 end
-			return this.forced_proximity and this.forced_proximity or this.proximity
-		end,
-		on_display_change = function(this)
-			this.size = (state.fullscreen or state.maximized) and options.top_bar_size_fullscreen or options.top_bar_size
-			this.icon_size = round(this.size / 8)
-			this.spacing = math.ceil(this.size * 0.25)
-			this.font_size = math.floor(this.size - (this.spacing * 2))
-			this.button_width = round(this.size * 1.15)
-			this.title_bx = display.width - (options.top_bar_controls and (this.button_width * 3) or 0)
-			this.ax = options.top_bar_title and 0 or this.title_bx
-			this.ay = 0
-			this.bx = display.width
-			this.by = this.size
-		end,
-		render = render_top_bar,
-	}))
-end
+elements:add('top_bar', Element.new({
+	button_opacity = 0.8,
+	enabled = false,
+	get_effective_proximity = function(this)
+		if (elements.volume_slider and elements.volume_slider.pressed) or elements.curtain.opacity > 0 then return 0 end
+		return this.forced_proximity and this.forced_proximity or this.proximity
+	end,
+	update_dimensions = function(this)
+		this.size = state.fullormaxed and options.top_bar_size_fullscreen or options.top_bar_size
+		this.icon_size = round(this.size / 8)
+		this.spacing = math.ceil(this.size * 0.25)
+		this.font_size = math.floor(this.size - (this.spacing * 2))
+		this.button_width = round(this.size * 1.15)
+		this.ay = elements.window_border.size
+		this.bx = display.width - elements.window_border.size
+		this.by = this.size + elements.window_border.size
+		this.title_bx = this.bx - (options.top_bar_controls and (this.button_width * 3) or 0)
+		this.ax = options.top_bar_title and elements.window_border.size or this.title_bx
+	end,
+	on_prop_border = function(this, value)
+		this.enabled = not value and (options.top_bar_controls or options.top_bar_title)
+		this:update_dimensions()
+	end,
+	on_display_change = function(this) this:update_dimensions() end,
+	render = render_top_bar,
+}))
 if options.top_bar_controls then
 	elements:add('window_controls_minimize', Element.new({
-		on_display_change = function(this)
-			this.ax = display.width - (elements.top_bar.button_width * 3)
-			this.ay = 0
+		update_dimensions = function(this)
+			this.ax = elements.top_bar.bx - (elements.top_bar.button_width * 3)
+			this.ay = elements.top_bar.ay
 			this.bx = this.ax + elements.top_bar.button_width
-			this.by = elements.top_bar.size
+			this.by = this.ay + elements.top_bar.size
 		end,
+		on_prop_border = function(this) this:update_dimensions() end,
+		on_display_change = function(this) this:update_dimensions() end,
 		on_mbtn_left_down = function() mp.commandv('cycle', 'window-minimized') end
 	}))
 	elements:add('window_controls_maximize', Element.new({
-		on_display_change = function(this)
-			this.ax = display.width - (elements.top_bar.button_width * 2)
-			this.ay = 0
+		update_dimensions = function(this)
+			this.ax = elements.top_bar.bx - (elements.top_bar.button_width * 2)
+			this.ay = elements.top_bar.ay
 			this.bx = this.ax + elements.top_bar.button_width
-			this.by = elements.top_bar.size
+			this.by = this.ay + elements.top_bar.size
 		end,
+		on_prop_border = function(this) this:update_dimensions() end,
+		on_display_change = function(this) this:update_dimensions() end,
 		on_mbtn_left_down = function() mp.commandv('cycle', 'window-maximized') end
 	}))
 	elements:add('window_controls_close', Element.new({
-		on_display_change = function(this)
-			this.ax = display.width - elements.top_bar.button_width
-			this.ay = 0
+		update_dimensions = function(this)
+			this.ax = elements.top_bar.bx - elements.top_bar.button_width
+			this.ay = elements.top_bar.ay
 			this.bx = this.ax + elements.top_bar.button_width
-			this.by = elements.top_bar.size
+			this.by = this.ay + elements.top_bar.size
 		end,
+		on_prop_border = function(this) this:update_dimensions() end,
+		on_display_change = function(this) this:update_dimensions() end,
 		on_mbtn_left_down = function() mp.commandv('quit') end
 	}))
 end
 if itable_find({'left', 'right'}, options.volume) then
 	elements:add('volume', Element.new({
-		width = nil, -- set in `on_display_change` handler based on `state.fullscreen`
-		height = nil, -- set in `on_display_change` handler based on `state.fullscreen`
-		margin = nil, -- set in `on_display_change` handler based on `state.fullscreen`
+		width = nil, -- set in `on_display_change` handler based on `state.fullormaxed`
+		height = nil, -- set in `on_display_change` handler based on `state.fullormaxed`
+		margin = nil, -- set in `on_display_change` handler based on `state.fullormaxed`
 		get_effective_proximity = function(this)
 			if elements.volume_slider.pressed then return 1 end
 			if elements.timeline.proximity_raw == 0 or elements.curtain.opacity > 0 then return 0 end
 			return this.forced_proximity and this.forced_proximity or this.proximity
 		end,
-		on_display_change = function(this)
-			this.width = (state.fullscreen or state.maximized) and options.volume_size_fullscreen or options.volume_size
+		update_dimensions = function(this)
+			this.width = state.fullormaxed and options.volume_size_fullscreen or options.volume_size
 			this.height = round(math.min(this.width * 8, (elements.timeline.ay - elements.top_bar.size) * 0.8))
 			-- Don't bother rendering this if too small
 			if this.height < (this.width * 2) then
 				this.height = 0
 			end
-			this.margin = this.width / 2
+			this.margin = (this.width / 2) + elements.window_border.size
 			this.ax = round(options.volume == 'left' and this.margin or display.width - this.margin - this.width)
 			this.ay = round((display.height - this.height) / 2)
 			this.bx = round(this.ax + this.width)
 			this.by = round(this.ay + this.height)
 		end,
+		on_display_change = function(this) this:update_dimensions() end,
+		on_prop_border = function(this) this:update_dimensions() end,
 		render = render_volume,
 	}))
 	elements:add('volume_mute', Element.new({
@@ -2411,13 +2462,13 @@ if options.speed then
 				this.forced_proximity = nil
 			end)
 		end,
-		on_display_change = function(this)
-			this.height = (state.fullscreen or state.maximized) and options.speed_size_fullscreen or options.speed_size
+		update_dimensions = function(this)
+			this.height = state.fullormaxed and options.speed_size_fullscreen or options.speed_size
 			this.width = round(this.height * 3.6)
 			this.notch_spacing = this.width / this.notches
 			this.step_distance = this.notch_spacing * (options.speed_step / this.notch_every)
 			this.ax = (display.width - this.width) / 2
-			this.by = display.height - elements.timeline.size_max
+			this.by = display.height - elements.window_border.size - elements.timeline.size_max - elements.timeline.top_border
 			this.ay = this.by - this.height
 			this.bx = this.ax + this.width
 			this.font_size = round(this.height * 0.48 * options.speed_font_scale)
@@ -2428,6 +2479,8 @@ if options.speed then
 			new_volume = round(new_volume / options.volume_step) * options.volume_step
 			if state.volume ~= new_volume then mp.commandv('set', 'volume', new_volume) end
 		end,
+		on_prop_border = function(this) this:update_dimensions() end,
+		on_display_change = function(this) this:update_dimensions() end,
 		on_mbtn_left_down = function(this)
 			this:tween_stop() -- Stop and cleanup possible ongoing animations
 			this.dragging = {
@@ -2670,7 +2723,6 @@ function create_state_setter(name)
 	return function(_, value)
 		state[name] = value
 		elements:trigger('prop_'..name, value)
-		request_render()
 	end
 end
 
@@ -2802,6 +2854,7 @@ function open_file_navigation_menu(directory, handle_select, menu_options)
 	directory = serialize_path(directory)
 	local directories, error = utils.readdir(directory.path, 'dirs')
 	local files, error = get_files_in_directory(directory.path, menu_options.allowed_types)
+	local is_root = not directory.dirname
 
 	if not files or not directories then
 		msg.error('Retrieving files from '..directory..' failed: '..(error or ''))
@@ -2812,7 +2865,7 @@ function open_file_navigation_menu(directory, handle_select, menu_options)
 	table.sort(directories, word_order_comparator)
 
 	-- Pre-populate items with parent directory selector if not at root
-	local items = not directory.dirname and {} or {
+	local items = is_root and {} or {
 		{title = '..', hint = 'parent dir', value = directory.dirname}
 	}
 
@@ -2837,6 +2890,7 @@ function open_file_navigation_menu(directory, handle_select, menu_options)
 		end
 	end
 
+	menu_options.selected_item = menu_options.active_item or ((is_root == false and #files > 1) and 2 or 1)
 	menu_options.title = directory.basename..'/'
 
 	menu:open(items, function(path)
@@ -2862,6 +2916,7 @@ options.proximity_out = math.max(options.proximity_out, options.proximity_in + 1
 options.chapters = itable_find({'dots', 'lines', 'lines-top', 'lines-bottom'}, options.chapters) and options.chapters or 'none'
 options.media_types = split(options.media_types, ' *, *')
 options.subtitle_types = split(options.subtitle_types, ' *, *')
+options.stream_quality_options = split(options.stream_quality_options, ' *, *')
 options.timeline_cached_ranges = (function()
 	if options.timeline_cached_ranges == '' or options.timeline_cached_ranges == 'no' then return nil end
 	local parts = split(options.timeline_cached_ranges, ':')
@@ -2871,22 +2926,24 @@ end)()
 -- HOOKS
 mp.register_event('file-loaded', parse_chapters)
 mp.observe_property('chapter-list', 'native', parse_chapters)
+mp.observe_property('border', 'bool', create_state_setter('border'))
 mp.observe_property('ab-loop-a', 'number', create_state_setter('ab_loop_a'))
 mp.observe_property('ab-loop-b', 'number', create_state_setter('ab_loop_b'))
-mp.observe_property('duration', 'number', function(name, val)
-	state.duration = val
-	state.total_time = val and mp.format_time(val) or nil
-end)
+mp.observe_property('duration', 'number', create_state_setter('duration'))
 mp.observe_property('media-title', 'string', create_state_setter('media_title'))
 mp.observe_property('fullscreen', 'bool', function(_, value)
 	state.fullscreen = value
-	elements:trigger('prop_fullscreen', value)
+	state.fullormaxed = state.fullscreen or state.maximized
 	update_display_dimensions()
+	elements:trigger('prop_fullscreen', value)
+	elements:trigger('prop_fullormaxed', state.fullormaxed)
 end)
 mp.observe_property('window-maximized', 'bool', function(_, value)
 	state.maximized = value
-	elements:trigger('prop_maximized', value)
+	state.fullormaxed = state.fullscreen or state.maximized
 	update_display_dimensions()
+	elements:trigger('prop_maximized', value)
+	elements:trigger('prop_fullormaxed', state.fullormaxed)
 end)
 mp.observe_property('idle-active', 'bool', create_state_setter('idle'))
 mp.observe_property('speed', 'number', create_state_setter('speed'))
@@ -3159,6 +3216,53 @@ mp.add_key_binding(nil, 'show-in-directory', function()
 			utils.subprocess({args = {'xdg-open', serialize_path(path).dirname}, cancellable = false})
 		end
 	end
+end)
+mp.add_key_binding(nil, 'stream-quality', function()
+	if menu:is_open('stream-quality') then menu:close() return end
+
+	local ytdl_format = mp.get_property_native('ytdl-format')
+	local active_item = nil
+	local formats = {}
+
+	for index, height in ipairs(options.stream_quality_options) do
+		local format = 'bestvideo[height<=?'..height..']+bestaudio/best[height<=?'..height..']'
+		formats[#formats + 1] = {
+			title = height..'p',
+			value = format
+		}
+		if format == ytdl_format then active_item = index end
+	end
+
+	menu:open(formats, function(format)
+		mp.set_property('ytdl-format', format)
+
+		-- Reload the video to apply new format
+		-- This is taken from https://github.com/jgreco/mpv-youtube-quality
+		-- which is in turn taken from https://github.com/4e6/mpv-reload/
+		-- Dunno if playlist_pos shenanigans below are necessary.
+		local playlist_pos = mp.get_property_number('playlist-pos')
+		local duration = mp.get_property_native('duration')
+		local time_pos = mp.get_property('time-pos')
+
+		mp.set_property_number('playlist-pos', playlist_pos)
+
+		-- Tries to determine live stream vs. pre-recordered VOD. VOD has non-zero
+		-- duration property. When reloading VOD, to keep the current time position
+		-- we should provide offset from the start. Stream doesn't have fixed start.
+		-- Decent choice would be to reload stream from it's current 'live' positon.
+		-- That's the reason we don't pass the offset when reloading streams.
+		if duration and duration > 0 then
+			local function seeker()
+				mp.commandv('seek', time_pos, 'absolute')
+				mp.unregister_event(seeker)
+			end
+			mp.register_event('file-loaded', seeker)
+		end
+	end, {
+		type = 'stream-quality',
+		title = 'Stream quality',
+		active_item = active_item,
+	})
 end)
 mp.add_key_binding(nil, 'open-file', function()
 	if menu:is_open('open-file') then menu:close() return end
